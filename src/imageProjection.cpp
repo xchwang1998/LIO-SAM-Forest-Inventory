@@ -20,14 +20,14 @@ struct OusterPointXYZIRT {
     uint32_t t;
     uint16_t reflectivity;
     uint8_t ring;
-    uint16_t noise;
+    uint16_t ambient;
     uint32_t range;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 } EIGEN_ALIGN16;
 POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
     (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
     (uint32_t, t, t) (uint16_t, reflectivity, reflectivity)
-    (uint8_t, ring, ring) (uint16_t, noise, noise) (uint32_t, range, range)
+    (uint8_t, ring, ring) (uint16_t, ambient, ambient) (uint32_t, range, range)
 )
 
 // Use the Velodyne point format as a common representation
@@ -47,6 +47,8 @@ private:
     
     ros::Publisher pubExtractedCloud;
     ros::Publisher pubLaserCloudInfo;
+
+    ros::Publisher pubOriCloud;
 
     ros::Subscriber subImu;
     std::deque<sensor_msgs::Imu> imuQueue;
@@ -97,6 +99,7 @@ public:
 
         pubExtractedCloud = nh.advertise<sensor_msgs::PointCloud2> ("lio_sam/deskew/cloud_deskewed", 1);
         pubLaserCloudInfo = nh.advertise<lio_sam::cloud_info> ("lio_sam/deskew/cloud_info", 1);
+        pubOriCloud = nh.advertise<sensor_msgs::PointCloud2> ("lio_sam/original/cloud", 1);
 
         allocateMemory();
         resetParameters();
@@ -601,6 +604,8 @@ public:
     {
         cloudInfo.header = cloudHeader;
         cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, extractedCloud, cloudHeader.stamp, lidarFrame);
+        cloudInfo.ori_cloud = publishCloud(pubOriCloud, tmpOusterCloudIn, cloudHeader.stamp, lidarFrame);
+
         pubLaserCloudInfo.publish(cloudInfo);
     }
 };

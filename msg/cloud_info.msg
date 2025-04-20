@@ -33,3 +33,6 @@ sensor_msgs/PointCloud2 key_frame_cloud
 sensor_msgs/PointCloud2 key_frame_color
 sensor_msgs/PointCloud2 key_frame_poses
 sensor_msgs/PointCloud2 key_frame_map
+
+sensor_msgs/PointCloud2 ori_cloud  # original cloud
+sensor_msgs/PointCloud2 ori_cloud_key_registrated  # original cloud

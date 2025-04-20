@@ -1,5 +1,6 @@
 #include "utility.h"
 #include "lio_sam/cloud_info.h"
+#include "lio_sam/key_frame_info.h"
 #include "lio_sam/save_map.h"
 
 #include <gtsam/geometry/Rot3.h>
@@ -46,6 +47,21 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZIRPYT,
 
 typedef PointXYZIRPYT  PointTypePose;
 
+struct OusterPointXYZIRT {
+    PCL_ADD_POINT4D;
+    float intensity;
+    uint32_t t;
+    uint16_t reflectivity;
+    uint8_t ring;
+    uint16_t ambient;
+    uint32_t range;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+} EIGEN_ALIGN16;
+POINT_CLOUD_REGISTER_POINT_STRUCT(OusterPointXYZIRT,
+    (float, x, x) (float, y, y) (float, z, z) (float, intensity, intensity)
+    (uint32_t, t, t) (uint16_t, reflectivity, reflectivity)
+    (uint8_t, ring, ring) (uint16_t, ambient, ambient) (uint32_t, range, range)
+)
 
 class mapOptimization : public ParamServer
 {
@@ -73,7 +89,10 @@ public:
     ros::Publisher pubCloudRegisteredRaw;
     ros::Publisher pubLoopConstraintEdge;
 
+    ros::Publisher pubCloudOriKeyRegistered;
+
     ros::Publisher pubSLAMInfo;
+    ros::Publisher pubKeyFrameInfo;
 
     ros::Subscriber subCloud;
     ros::Subscriber subGPS;
@@ -181,7 +200,10 @@ public:
         pubRecentKeyFrame     = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/mapping/cloud_registered", 1);
         pubCloudRegisteredRaw = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/mapping/cloud_registered_raw", 1);
 
+        pubCloudOriKeyRegistered = nh.advertise<sensor_msgs::PointCloud2>("lio_sam/original/key_registered", 1);
+
         pubSLAMInfo           = nh.advertise<lio_sam::cloud_info>("lio_sam/mapping/slam_info", 1);
+        pubKeyFrameInfo       = nh.advertise<lio_sam::key_frame_info>("lio_sam/key_frame_info", 1);
 
         downSizeFilterCorner.setLeafSize(mappingCornerLeafSize, mappingCornerLeafSize, mappingCornerLeafSize);
         downSizeFilterSurf.setLeafSize(mappingSurfLeafSize, mappingSurfLeafSize, mappingSurfLeafSize);
@@ -303,6 +325,33 @@ public:
         }
         return cloudOut;
     }
+    
+    pcl::PointCloud<OusterPointXYZIRT>::Ptr transformPointCloud(pcl::PointCloud<OusterPointXYZIRT>::Ptr cloudIn, PointTypePose* transformIn)
+    {
+        pcl::PointCloud<OusterPointXYZIRT>::Ptr cloudOut(new pcl::PointCloud<OusterPointXYZIRT>());
+
+        int cloudSize = cloudIn->size();
+        cloudOut->resize(cloudSize);
+
+        Eigen::Affine3f transCur = pcl::getTransformation(transformIn->x, transformIn->y, transformIn->z, transformIn->roll, transformIn->pitch, transformIn->yaw);
+        
+        #pragma omp parallel for num_threads(numberOfCores)
+        for (int i = 0; i < cloudSize; ++i)
+        {
+            const auto &pointFrom = cloudIn->points[i];
+            cloudOut->points[i].x = transCur(0,0) * pointFrom.x + transCur(0,1) * pointFrom.y + transCur(0,2) * pointFrom.z + transCur(0,3);
+            cloudOut->points[i].y = transCur(1,0) * pointFrom.x + transCur(1,1) * pointFrom.y + transCur(1,2) * pointFrom.z + transCur(1,3);
+            cloudOut->points[i].z = transCur(2,0) * pointFrom.x + transCur(2,1) * pointFrom.y + transCur(2,2) * pointFrom.z + transCur(2,3);
+            cloudOut->points[i].intensity = pointFrom.intensity;
+            
+            cloudOut->points[i].ring = pointFrom.ring;
+            cloudOut->points[i].reflectivity = pointFrom.reflectivity;
+            cloudOut->points[i].range = pointFrom.range;
+            cloudOut->points[i].t = pointFrom.t;
+            cloudOut->points[i].ambient = pointFrom.ambient;
+        }
+        return cloudOut;
+    }
 
     gtsam::Pose3 pclPointTogtsamPose3(PointTypePose thisPoint)
     {
@@ -355,7 +404,7 @@ public:
     bool saveMapService(lio_sam::save_mapRequest& req, lio_sam::save_mapResponse& res)
     {
       string saveMapDirectory;
-
+      
       cout << "****************************************************" << endl;
       cout << "Saving map to pcd files ..." << endl;
       if(req.destination.empty()) saveMapDirectory = std::getenv("HOME") + savePCDDirectory;
@@ -414,6 +463,21 @@ public:
 
       cout << "****************************************************" << endl;
       cout << "Saving map to pcd files completed\n" << endl;
+      
+      std::ofstream csv_file(saveMapDirectory + "/globalPath.csv");
+      csv_file << "time,X,Y,Z,roll,pitch,yaw\n"; // header
+      for(int i=0; i<cloudKeyPoses6D->size(); i++)
+      {
+        csv_file << std::setprecision(16) << cloudKeyPoses6D->points[i].time << ","
+                                          << cloudKeyPoses6D->points[i].x << ","
+                                          << cloudKeyPoses6D->points[i].y << ","
+                                          << cloudKeyPoses6D->points[i].z << ","
+                                          << cloudKeyPoses6D->points[i].roll << ","
+                                          << cloudKeyPoses6D->points[i].pitch << ","
+                                          << cloudKeyPoses6D->points[i].yaw << "\n";
+      }
+      csv_file.close();
+      cout << "********************save the trajectory**********************" << endl;
 
       return true;
     }
@@ -1727,6 +1791,19 @@ public:
             *cloudOut = *transformPointCloud(cloudOut,  &thisPose6D);
             publishCloud(pubCloudRegisteredRaw, cloudOut, timeLaserInfoStamp, odometryFrame);
         }
+        
+        // publish registered (Ouster type)
+        if (pubCloudOriKeyRegistered.getNumSubscribers() != 0)
+        {
+            pcl::PointCloud<OusterPointXYZIRT>::Ptr tmpOusterCloudIn(new pcl::PointCloud<OusterPointXYZIRT>());
+            pcl::fromROSMsg(cloudInfo.ori_cloud, *tmpOusterCloudIn);
+            
+            PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
+            *tmpOusterCloudIn = *transformPointCloud(tmpOusterCloudIn,  &thisPose6D);
+            
+            publishCloud(pubCloudOriKeyRegistered, tmpOusterCloudIn, timeLaserInfoStamp, odometryFrame);     
+        }
+        
         // publish path
         if (pubPath.getNumSubscribers() != 0)
         {
@@ -1734,6 +1811,7 @@ public:
             globalPath.header.frame_id = odometryFrame;
             pubPath.publish(globalPath);
         }
+        
         // publish SLAM infomation for 3rd-party usage
         static int lastSLAMInfoPubSize = -1;
         if (pubSLAMInfo.getNumSubscribers() != 0)
@@ -1755,9 +1833,36 @@ public:
                 lastSLAMInfoPubSize = cloudKeyPoses6D->size();
             }
         }
+
+        static int lastKeyFrameInfoPubSize = -1;
+        // publish keyFrame info, cloud and Pose 
+        if(pubKeyFrameInfo.getNumSubscribers() != 0)
+        {
+            if(lastKeyFrameInfoPubSize != cloudKeyPoses6D->size())
+            {
+                pcl::PointCloud<OusterPointXYZIRT>::Ptr tmpOusterCloudIn(new pcl::PointCloud<OusterPointXYZIRT>());
+                pcl::fromROSMsg(cloudInfo.ori_cloud, *tmpOusterCloudIn);
+                
+                PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
+                *tmpOusterCloudIn = *transformPointCloud(tmpOusterCloudIn,  &thisPose6D);
+                
+                lio_sam::key_frame_info keyframeInfo;
+                keyframeInfo.header.stamp = timeLaserInfoStamp;
+                keyframeInfo.key_frame_cloud_ori = cloudInfo.ori_cloud;
+                keyframeInfo.key_frame_cloud_transed = publishCloud(ros::Publisher(), tmpOusterCloudIn, timeLaserInfoStamp, odometryFrame);
+
+                keyframeInfo.key_frame_poses = publishCloud(ros::Publisher(), cloudKeyPoses6D, timeLaserInfoStamp, odometryFrame);
+                
+                pubKeyFrameInfo.publish(keyframeInfo);
+                
+                lastKeyFrameInfoPubSize = cloudKeyPoses6D->size();
+            }
+        }
     }
 };
 
+// TODO: pubSLAMInfo这里发布了SLAMinfo整合在一起，我是否要新建一个msg，发布ori Ouster, 配准后的Ouster，Keypose,
+// 原先的Keypose是很多个，那么在接受到消息之后是使用keypose6d中的第一个值??因为我要转换到统一坐标系
 
 int main(int argc, char** argv)
 {

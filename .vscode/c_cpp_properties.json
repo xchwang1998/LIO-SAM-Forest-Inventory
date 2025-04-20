@@ -1,0 +1,23 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/xiaochen/workspace/LIO_SAM_Forest_Inventory_ws/devel/include/**",
+        "/home/xiaochen/Downloads/livox_ws/devel/include/**",
+        "/opt/ros/melodic/include/**",
+        "/home/xiaochen/workspace/LIO_SAM_Forest_Inventory_ws/src/LIO-SAM-Forest-Inventory/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
